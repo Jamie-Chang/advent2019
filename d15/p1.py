@@ -5,7 +5,7 @@ import itertools
 import sys
 from dataclasses import dataclass, field
 from enum import Enum, IntEnum, auto
-from typing import AsyncIterator, Callable, Final, Iterator, Literal
+from typing import AsyncIterator, Callable, Final, Iterator, List, Literal, Tuple
 
 HALT = 99
 
@@ -48,26 +48,15 @@ def handler(op_code: OpCode, params: list[ParamType]):
 
 
 @dataclass
-class Processor:
+class BaseProcessor:
     code: list[int]
-    inputs: asyncio.Queue
-    outputs: asyncio.Queue
+    inputs: asyncio.Queue = field(default_factory=asyncio.Queue)
+    outputs: asyncio.Queue = field(default_factory=asyncio.Queue)
 
     halted: bool = False
 
     i: int = field(init=False, default=0)
     relative_base: int = field(init=False, default=0)
-
-    def copy(self):
-        p = Processor(
-            code=self.code.copy(),
-            inputs=asyncio.Queue(),
-            outputs=asyncio.Queue(),
-            halted=self.halted,
-        )
-        p.i = self.i
-        p.relative_base = self.relative_base
-        return p
 
     def __setitem__(self, index, value):
         try:
@@ -116,6 +105,8 @@ class Processor:
             params = tuple(self._consume_params(param_types, param_modes))
             await handler(self, *params)
 
+
+class Processor(BaseProcessor):
     @handler(1, [ParamType.INPUT, ParamType.INPUT, ParamType.OUTPUT])
     async def add(self, a, b, out):
         self[out] = a + b
@@ -174,6 +165,13 @@ def move(coord: tuple[int, int], direction: int) -> tuple[int, int]:
     return coord
 
 
+def calculate_coord(directions: list[int]) -> tuple[int, int]:
+    coord = (0, 0)
+    for direction in directions:
+        coord = move(coord, direction)
+    return coord
+
+
 def opposite(direction: int) -> int:
     if direction == NORTH:
         return SOUTH
@@ -191,11 +189,7 @@ class Droid:
     coord: tuple[int, int] = (0, 0)
     moves: list[int] = field(default_factory=list)
 
-    def copy(self) -> Droid:
-        return Droid(self.processor.copy(), self.coord, self.moves)
-
     async def move(self, direction: int):
-
         await self.processor.inputs.put(direction)
         status = await self.processor.outputs.get()
 
@@ -207,71 +201,45 @@ class Droid:
 
         return status
 
-    async def move_back(self):
-        pass
+    async def pop_moves(self):
+        reverse = [opposite(m) for m in reversed(self.moves)]
+        for move in reverse:
+            await self.move(move)
+        
+        self.moves = []
 
 
-# async def find(droid: Droid) -> int:
-#     queue = [droid]
-#     visited = {(0, 0)}
-#     while queue:
-#         droid = queue.pop(0)
-#         visited.add(droid.coord)
-#         for d in range(1, 5):
-#             if move(droid.coord, d) in visited:
-#                 continue
-#             new_droid = droid.copy()
-#             status = await new_droid.move(d)
-#             if status == 2:
-#                 return new_droid.moves
-            
-#             if status == 0:
-#                 continue
-
-#             queue.append(new_droid)
-MOVES = set()
-BOARD = {}
+Position: Tuple[List[int]]
 
 
-async def walk(droid: Droid, direction: int):
-    p = droid.processor
-    print(droid.coord, direction)
-    if (droid.coord, direction) in MOVES:
-        return
-    await p.inputs.put(direction)
-    status = await p.outputs.get()
-    MOVES.add((droid.coord, direction))
-
-    if status == 0:
-        BOARD[move(droid.coord, direction)] = '#'
-    elif status == 1:
-        droid.move_(direction)
-        BOARD[droid.coord] = '.'
-    elif status == 2:
-        droid.move_(direction)
-        BOARD[droid.coord] = '*'
+async def search(droid: Droid) -> list[int]:
+    print("Searching for the control panel")
+    queue: list[Position] = [[]]
+    previous: list[Position]
+    visited = set()
+    while queue:
+        moves = queue.pop(0)
+        coord = calculate_coord(moves)
+        if coord in visited:
+            continue
+        visited.add(coord)
+        
+        status = 1
+        for move in moves:
+            status = await droid.move(move)
+        if status == 2:
+            return moves
+        
+        if status == 1:
+            queue.extend([*moves, direction] for direction in range(1, 5))
+        await droid.pop_moves()
     
-    for d in (NORTH, EAST, SOUTH, WEST):
-        await walk(droid, d)
-
 
 async def main():
-    d = Droid((p:= Processor(read_code(), asyncio.Queue(), asyncio.Queue())))
+    droid = Droid((p := Processor(read_code())))
     t = asyncio.create_task(p.run())
-    # while True:
-    #     direction = int(input())
-    #     await p.inputs.put(direction)
-    #     status = await p.outputs.get()
-    #     if status != 0:
-    #         d.move_(direction)
-    #     coord = d.coord
-    #     print(f"{status = }, {coord = }")
-    for direction in (NORTH, EAST, SOUTH, WEST):
-        await walk(d, direction)
-    print(BOARD)
+    print(await search(droid))
     await t
-
-    # print(await find(Droid(Processor(read_code(), asyncio.Queue(), asyncio.Queue()))))
 
 
 if __name__ == "__main__":
